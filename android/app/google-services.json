@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "246334008034",
+    "project_id": "hrms-2563e",
+    "storage_bucket": "hrms-2563e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:246334008034:android:27be52d6604720a068ccbb",
+        "android_client_info": {
+          "package_name": "com.tulsifabindia.hrms"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAL_9Hc29v_Rh2NneTkUllSv88i3ASPtmk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
