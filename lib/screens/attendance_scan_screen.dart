@@ -21,18 +21,24 @@ class AttendanceScanScreen extends StatefulWidget {
   State<AttendanceScanScreen> createState() => _AttendanceScanScreenState();
 }
 
-class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
+class _AttendanceScanScreenState extends State<AttendanceScanScreen>
+    with SingleTickerProviderStateMixin {
   late String _type;
   int? _selectedEmployeeId;
+  bool _autoDetectStaff = true;
   List<dynamic> _teamList = [];
   bool _isScanning = false;
-  bool _faceDetected = false;
+  bool _faceVerified = false;
   String? _greetingMessage;
   String? _errorMessage;
-  String _faceStatusText = 'Scanning face...';
+  String _faceStatusText = 'Align your face inside the circle...';
   bool _isFrontCamera = true;
   File? _capturedImage;
+  Map<String, dynamic>? _detectedEmployee;
   final ImagePicker _picker = ImagePicker();
+
+  late AnimationController _animCtrl;
+  late Animation<double> _scanAnimation;
 
   @override
   void initState() {
@@ -40,30 +46,50 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
     _type = widget.initialType;
     _selectedEmployeeId = widget.targetEmployeeId;
 
-    // Self punch (staff or manager self) defaults to Front Camera; Manager punching staff defaults to Back Camera
-    if (widget.targetEmployeeId != null && widget.targetEmployeeId != widget.user.id) {
-      _isFrontCamera = false; // Back camera for manager punching staff
-    } else {
-      _isFrontCamera = true; // Front camera by default for self punch
-    }
-
-    _updateTime();
-    if (widget.user.isManager) {
+    final bool isManagerOrCanMark = widget.user.isManager || widget.user.canMarkOthers;
+    if (isManagerOrCanMark) {
+      if (widget.targetEmployeeId != null && widget.targetEmployeeId != widget.user.id) {
+        _isFrontCamera = false;
+        _autoDetectStaff = false;
+      } else {
+        _isFrontCamera = false;
+        _autoDetectStaff = true; // Auto-detect staff by default for managers!
+      }
       _loadTeam();
+    } else {
+      _isFrontCamera = true;
+      _autoDetectStaff = false;
     }
 
-    _startFaceScanAndPunch();
+    _animCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat(reverse: true);
+
+    _scanAnimation = Tween<double>(begin: -1.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animCtrl, curve: Curves.easeInOut),
+    );
+
+    // Prompt camera capture on screen open
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _capturePhotoAndVerify();
+    });
   }
 
-  void _updateTime() {
+  @override
+  void dispose() {
+    _animCtrl.dispose();
+    super.dispose();
   }
 
   void _loadTeam() async {
     try {
       final res = await ApiService.getDepartmentEmployees();
-      setState(() {
-        _teamList = res;
-      });
+      if (mounted) {
+        setState(() {
+          _teamList = res;
+        });
+      }
     } catch (e) {
       debugPrint("Error loading team: $e");
     }
@@ -78,7 +104,9 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           backgroundColor: const Color(0xFF1E293B),
-          title: const Text('Select Staff for Attendance', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Select Staff for Attendance',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
           content: SizedBox(
             width: double.maxFinite,
             child: Column(
@@ -86,13 +114,14 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
               children: [
                 TextField(
                   controller: searchCtrl,
-                  style: const TextStyle(color: Colors.white),
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
                   decoration: InputDecoration(
-                    hintText: 'Search staff by name or dept...',
-                    hintStyle: const TextStyle(color: Colors.white54),
-                    prefixIcon: const Icon(Icons.search, color: Colors.white70),
+                    hintText: 'Search staff by name or code...',
+                    hintStyle: const TextStyle(color: Colors.white54, fontSize: 12),
+                    prefixIcon: const Icon(Icons.search, color: Colors.white70, size: 18),
                     filled: true,
                     fillColor: const Color(0xFF0F172A),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
                   ),
                   onChanged: (q) {
@@ -100,46 +129,93 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
                       filtered = _teamList.where((e) {
                         final name = (e['name'] ?? '').toString().toLowerCase();
                         final dept = (e['department'] ?? '').toString().toLowerCase();
-                        return name.contains(q.toLowerCase()) || dept.contains(q.toLowerCase());
+                        final code = (e['employee_code'] ?? '').toString().toLowerCase();
+                        final query = q.toLowerCase();
+                        return name.contains(query) || dept.contains(query) || code.contains(query);
                       }).toList();
                     });
                   },
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 SizedBox(
-                  height: 250,
+                  height: 260,
                   child: ListView(
                     children: [
                       ListTile(
-                        leading: const CircleAvatar(backgroundColor: Color(0xFF2563EB), child: Icon(Icons.person, color: Colors.white)),
-                        title: Text('Self (${widget.user.name})', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        dense: true,
+                        leading: const CircleAvatar(
+                          backgroundColor: Color(0xFF0284C7),
+                          radius: 16,
+                          child: Icon(Icons.auto_awesome, color: Colors.white, size: 16),
+                        ),
+                        title: const Text('AI Auto-Detect Face (Any Staff)',
+                            style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 13)),
+                        subtitle: const Text('Scans face and recognizes staff automatically',
+                            style: TextStyle(color: Colors.white54, fontSize: 11)),
                         onTap: () {
                           setState(() {
+                            _autoDetectStaff = true;
+                            _selectedEmployeeId = null;
+                            _isFrontCamera = false;
+                            _capturedImage = null;
+                            _detectedEmployee = null;
+                          });
+                          Navigator.pop(ctx);
+                          _capturePhotoAndVerify();
+                        },
+                      ),
+                      const Divider(color: Colors.white12),
+                      ListTile(
+                        dense: true,
+                        leading: const CircleAvatar(
+                          backgroundColor: Color(0xFF2563EB),
+                          radius: 16,
+                          child: Icon(Icons.person, color: Colors.white, size: 16),
+                        ),
+                        title: Text('Self (${widget.user.name})',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                        onTap: () {
+                          setState(() {
+                            _autoDetectStaff = false;
                             _selectedEmployeeId = null;
                             _isFrontCamera = true;
                             _capturedImage = null;
+                            _detectedEmployee = null;
                           });
                           Navigator.pop(ctx);
-                          _startFaceScanAndPunch();
+                          _capturePhotoAndVerify();
                         },
                       ),
                       const Divider(color: Colors.white12),
                       ...filtered.map((e) => ListTile(
+                            dense: true,
                             leading: CircleAvatar(
                               backgroundColor: const Color(0xFF0F172A),
-                              backgroundImage: e['photo'] != null ? NetworkImage(e['photo']) : null,
-                              child: e['photo'] == null ? Text((e['name'] ?? 'S')[0].toUpperCase(), style: const TextStyle(color: Colors.white)) : null,
+                              radius: 16,
+                              backgroundImage: e['photo'] != null && e['photo'].toString().isNotEmpty
+                                  ? NetworkImage(e['photo'])
+                                  : null,
+                              child: e['photo'] == null
+                                  ? Text((e['name'] ?? 'S')[0].toUpperCase(),
+                                      style: const TextStyle(color: Colors.white, fontSize: 12))
+                                  : null,
                             ),
-                            title: Text(e['name'] ?? 'Staff', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                            subtitle: Text(e['department'] ?? 'General Staff', style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                            title: Text(e['name'] ?? 'Staff',
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                            subtitle: Text(
+                              '${e['employee_code'] ?? ''} • ${e['department'] ?? 'General Staff'}',
+                              style: const TextStyle(color: Colors.white54, fontSize: 11),
+                            ),
                             onTap: () {
                               setState(() {
+                                _autoDetectStaff = false;
                                 _selectedEmployeeId = e['id'];
                                 _isFrontCamera = false;
                                 _capturedImage = null;
+                                _detectedEmployee = null;
                               });
                               Navigator.pop(ctx);
-                              _startFaceScanAndPunch();
+                              _capturePhotoAndVerify();
                             },
                           )),
                     ],
@@ -153,58 +229,60 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
     );
   }
 
-  Future<void> _capturePhoto() async {
+  Future<void> _capturePhotoAndVerify() async {
+    setState(() {
+      _errorMessage = null;
+      _greetingMessage = null;
+      _faceVerified = false;
+      _isScanning = true;
+      _faceStatusText = 'Align your face inside the circle...';
+    });
+
     try {
       final cameraDevice = _isFrontCamera ? CameraDevice.front : CameraDevice.rear;
       final XFile? image = await _picker.pickImage(
         source: ImageSource.camera,
         preferredCameraDevice: cameraDevice,
-        imageQuality: 70,
-        maxWidth: 800,
+        imageQuality: 75,
+        maxWidth: 900,
       );
-      if (image != null) {
+
+      if (image == null) {
         setState(() {
-          _capturedImage = File(image.path);
+          _isScanning = false;
+          _faceStatusText = 'Face capture cancelled. Tap "Scan Face" to try again.';
         });
+        return;
       }
-    } catch (e) {
-      debugPrint("Camera capture error: $e");
-    }
-  }
 
-  void _startFaceScanAndPunch() async {
-    final isSelfPunch = _selectedEmployeeId == null || _selectedEmployeeId == widget.user.id;
+      setState(() {
+        _capturedImage = File(image.path);
+        _faceStatusText = 'Verifying face with AI Selfie Verification...';
+      });
 
-    setState(() {
-      _isScanning = true;
-      _faceDetected = false;
-      _greetingMessage = null;
-      _errorMessage = null;
-      _faceStatusText = isSelfPunch ? 'Keep face in circle...' : 'Scanning staff face...';
-    });
+      final officeLat = await ApiService.getOfficeLat();
+      final officeLng = await ApiService.getOfficeLng();
 
-    // Attempt to capture photo automatically if not yet captured
-    if (_capturedImage == null) {
-      await _capturePhoto();
-    }
+      Map<String, dynamic> res;
 
-    // Brief processing pause
-    await Future.delayed(const Duration(milliseconds: 1200));
-
-    setState(() {
-      _faceDetected = true;
-      _faceStatusText = 'Face & Photo Verified!';
-    });
-
-    try {
-      final res = await ApiService.punchAttendance(
-        type: _type,
-        lat: 26.8581,
-        lng: 75.7642,
-        faceDetected: true,
-        employeeId: _selectedEmployeeId,
-        photoPath: _capturedImage?.path,
-      );
+      if (_autoDetectStaff) {
+        // Manager Mode: AI auto-detects staff from registered face images
+        res = await ApiService.recognizeAndPunch(
+          photoPath: image.path,
+          lat: officeLat,
+          lng: officeLng,
+        );
+      } else {
+        // Specific staff or Self attendance: verify against registered profile
+        res = await ApiService.punchAttendance(
+          type: _type,
+          lat: officeLat,
+          lng: officeLng,
+          faceDetected: true,
+          employeeId: _selectedEmployeeId,
+          photoPath: image.path,
+        );
+      }
 
       setState(() => _isScanning = false);
 
@@ -213,27 +291,35 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
         final nextAction = res['next_action'] ?? (_type == 'in' ? 'out' : 'in');
 
         setState(() {
+          _faceVerified = true;
           _greetingMessage = speakMsg;
-          _type = nextAction; // Update next action automatically
+          _type = nextAction;
+          if (res['employee'] != null) {
+            _detectedEmployee = res['employee'];
+          }
         });
 
         // Voice Greeting
         await TtsService.speak(speakMsg);
 
-        // Auto close after 2.5 seconds success
-        await Future.delayed(const Duration(milliseconds: 2500));
+        // Auto close after 2.8 seconds on success
+        await Future.delayed(const Duration(milliseconds: 2800));
         if (mounted) {
           Navigator.pop(context, true);
         }
       } else {
+        final err = res['message'] ?? 'Face not recognized with Edit Staff Member AI Selfie Verification image.';
         setState(() {
-          _errorMessage = res['message'] ?? 'Failed to mark attendance.';
+          _faceVerified = false;
+          _errorMessage = err;
         });
+        await TtsService.speak('Face not recognized');
       }
     } catch (e) {
       setState(() {
         _isScanning = false;
-        _errorMessage = 'Error marking attendance: $e';
+        _faceVerified = false;
+        _errorMessage = 'Error during face verification: $e';
       });
     }
   }
@@ -241,14 +327,26 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
   @override
   Widget build(BuildContext context) {
     final companyTitle = widget.user.companyName ?? 'TULSI FABRICS INDIA PVT LTD';
-    final targetName = _selectedEmployeeId != null
-        ? (_teamList.firstWhere((e) => e['id'] == _selectedEmployeeId, orElse: () => {'name': 'Staff'})['name'])
-        : widget.user.name;
 
-    final isSelfPunch = _selectedEmployeeId == null || _selectedEmployeeId == widget.user.id;
+    String modeDescription = '';
+    if (_autoDetectStaff) {
+      modeDescription = 'Manager Mode: Auto-Detect Staff Face';
+    } else if (_selectedEmployeeId != null && _selectedEmployeeId != widget.user.id) {
+      final staffObj = _teamList.firstWhere(
+        (e) => e['id'] == _selectedEmployeeId,
+        orElse: () => {'name': 'Staff'},
+      );
+      modeDescription = 'Manager Mode: Marking for ${staffObj['name']}';
+    } else {
+      modeDescription = 'Self Attendance: ${widget.user.name}';
+    }
+
+    final Color ringColor = _errorMessage != null
+        ? const Color(0xFFEF4444)
+        : (_faceVerified ? const Color(0xFF10B981) : const Color(0xFF0284C7));
 
     return Scaffold(
-      backgroundColor: const Color(0xFF111827),
+      backgroundColor: const Color(0xFF0B0F19),
       appBar: AppBar(
         backgroundColor: const Color(0xFF0F172A),
         elevation: 0,
@@ -258,25 +356,33 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
         ),
         title: Text(
           companyTitle,
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
           overflow: TextOverflow.ellipsis,
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.camera_front, color: Colors.white),
+            tooltip: 'Flip Camera',
+            icon: Icon(
+              _isFrontCamera ? Icons.camera_front : Icons.camera_rear,
+              color: const Color(0xFF38BDF8),
+            ),
             onPressed: () {
               setState(() {
                 _isFrontCamera = !_isFrontCamera;
                 _capturedImage = null;
               });
-              _startFaceScanAndPunch();
+              _capturePhotoAndVerify();
             },
           ),
           IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.white),
+            tooltip: 'Retry Scan',
+            icon: const Icon(Icons.refresh, color: Colors.white70),
             onPressed: () {
-              setState(() => _capturedImage = null);
-              _startFaceScanAndPunch();
+              setState(() {
+                _capturedImage = null;
+                _detectedEmployee = null;
+              });
+              _capturePhotoAndVerify();
             },
           ),
         ],
@@ -284,64 +390,51 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Status Banners
+            // Subtitle banner with shift and mode
             Container(
               width: double.infinity,
               color: const Color(0xFF1E293B),
               padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-              child: Text(
-                'Ready to mark attendance ${_type.toUpperCase()} for $targetName',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
-              ),
-            ),
-            Container(
-              width: double.infinity,
-              color: const Color(0xFF1E293B),
-              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-              child: Text(
-                'Current Shift: ${widget.user.shiftName ?? "General Staff Shift (09:45 AM - 08:30 PM)"}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 12),
+              child: Row(
+                children: [
+                  Icon(
+                    _autoDetectStaff ? Icons.auto_awesome : Icons.person_pin,
+                    color: const Color(0xFF38BDF8),
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      modeDescription,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (widget.user.isManager || widget.user.canMarkOthers)
+                    InkWell(
+                      onTap: _showSelectStaffSearchDialog,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0284C7).withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: const Color(0xFF0284C7)),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.tune, color: Color(0xFF38BDF8), size: 12),
+                            SizedBox(width: 4),
+                            Text('Change Mode', style: TextStyle(color: Color(0xFF38BDF8), fontSize: 11, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
 
-            // Manager Employee Selection Bar with Search Button
-            if (widget.user.isManager)
-              Container(
-                color: Colors.black54,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                child: Row(
-                  children: [
-                    Icon(
-                      _isFrontCamera ? Icons.camera_front : Icons.camera_rear,
-                      color: Colors.amberAccent,
-                      size: 16,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _isFrontCamera ? "FRONT (Selfie)" : "BACK (Manager Mode)",
-                      style: const TextStyle(color: Colors.amberAccent, fontSize: 11, fontWeight: FontWeight.bold),
-                    ),
-                    const Spacer(),
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Color(0xFF38BDF8)),
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      ),
-                      icon: const Icon(Icons.search, size: 14, color: Color(0xFF38BDF8)),
-                      label: Text(
-                        _selectedEmployeeId == null ? 'Self (${widget.user.name})' : targetName,
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                      ),
-                      onPressed: _showSelectStaffSearchDialog,
-                    ),
-                  ],
-                ),
-              ),
-
-            // Circular Viewfinder with Photo Preview
+            // Viewfinder Area
             Expanded(
               child: Center(
                 child: SingleChildScrollView(
@@ -349,52 +442,208 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       const SizedBox(height: 16),
-                      GestureDetector(
-                        onTap: _capturePhoto,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
+
+                      // Holographic Circular Scanner Frame
+                      Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          // Outer Pulsing Glow Circle
+                          Container(
+                            width: 270,
+                            height: 270,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: ringColor.withOpacity(0.35),
+                                  blurRadius: 24,
+                                  spreadRadius: 4,
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          // Outer Ring with Target Dashes
+                          Container(
+                            width: 260,
+                            height: 260,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(color: ringColor, width: 3),
+                            ),
+                          ),
+
+                          // Inner Clipped Face View
+                          ClipOval(
+                            child: Container(
+                              width: 246,
+                              height: 246,
+                              color: const Color(0xFF0F172A),
+                              child: Stack(
+                                alignment: Alignment.center,
+                                children: [
+                                  if (_capturedImage != null)
+                                    Image.file(
+                                      _capturedImage!,
+                                      width: 246,
+                                      height: 246,
+                                      fit: BoxFit.cover,
+                                    )
+                                  else
+                                    Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.face_retouching_natural,
+                                          size: 110,
+                                          color: Colors.white.withOpacity(0.35),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          'Place face here',
+                                          style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                                        ),
+                                      ],
+                                    ),
+
+                                  // Animated Laser Scan Line
+                                  if (_isScanning)
+                                    AnimatedBuilder(
+                                      animation: _scanAnimation,
+                                      builder: (context, child) {
+                                        return Align(
+                                          alignment: Alignment(0.0, _scanAnimation.value),
+                                          child: Container(
+                                            height: 3,
+                                            width: 246,
+                                            decoration: BoxDecoration(
+                                              gradient: LinearGradient(
+                                                colors: [
+                                                  Colors.transparent,
+                                                  ringColor,
+                                                  Colors.white,
+                                                  ringColor,
+                                                  Colors.transparent,
+                                                ],
+                                              ),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: ringColor.withOpacity(0.8),
+                                                  blurRadius: 10,
+                                                  spreadRadius: 2,
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+
+                                  // Corner target guides
+                                  Positioned(
+                                    top: 18,
+                                    left: 45,
+                                    child: Container(width: 14, height: 2, color: ringColor),
+                                  ),
+                                  Positioned(
+                                    top: 18,
+                                    left: 45,
+                                    child: Container(width: 2, height: 14, color: ringColor),
+                                  ),
+                                  Positioned(
+                                    top: 18,
+                                    right: 45,
+                                    child: Container(width: 14, height: 2, color: ringColor),
+                                  ),
+                                  Positioned(
+                                    top: 18,
+                                    right: 45,
+                                    child: Container(width: 2, height: 14, color: ringColor),
+                                  ),
+                                  Positioned(
+                                    bottom: 18,
+                                    left: 45,
+                                    child: Container(width: 14, height: 2, color: ringColor),
+                                  ),
+                                  Positioned(
+                                    bottom: 18,
+                                    left: 45,
+                                    child: Container(width: 2, height: 14, color: ringColor),
+                                  ),
+                                  Positioned(
+                                    bottom: 18,
+                                    right: 45,
+                                    child: Container(width: 14, height: 2, color: ringColor),
+                                  ),
+                                  Positioned(
+                                    bottom: 18,
+                                    right: 45,
+                                    child: Container(width: 2, height: 14, color: ringColor),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                          // Verification Success Icon Overlay
+                          if (_faceVerified)
                             Container(
-                              width: 250,
-                              height: 250,
-                              decoration: BoxDecoration(
+                              width: 60,
+                              height: 60,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFF10B981),
                                 shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: _faceDetected ? Colors.greenAccent : Colors.white70,
-                                  width: 3,
+                              ),
+                              child: const Icon(Icons.check, color: Colors.white, size: 38),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+
+                      // Detected Employee Card (Manager Mode Auto-Detect)
+                      if (_detectedEmployee != null)
+                        Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1E293B),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFF10B981), width: 1.5),
+                          ),
+                          child: Row(
+                            children: [
+                              CircleAvatar(
+                                radius: 22,
+                                backgroundColor: const Color(0xFF0F172A),
+                                backgroundImage: _detectedEmployee!['avatar'] != null
+                                    ? NetworkImage(_detectedEmployee!['avatar'])
+                                    : null,
+                                child: _detectedEmployee!['avatar'] == null
+                                    ? const Icon(Icons.person, color: Colors.white)
+                                    : null,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _detectedEmployee!['name'] ?? 'Staff',
+                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                                    ),
+                                    Text(
+                                      '${_detectedEmployee!['employee_code'] ?? ''} • ${_detectedEmployee!['department'] ?? ''}',
+                                      style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11),
+                                    ),
+                                  ],
                                 ),
                               ),
-                            ),
-                            ClipOval(
-                              child: Container(
-                                width: 236,
-                                height: 236,
-                                color: Colors.grey.shade900,
-                                child: _capturedImage != null
-                                    ? Image.file(_capturedImage!, fit: BoxFit.cover)
-                                    : Stack(
-                                        alignment: Alignment.center,
-                                        children: [
-                                          Icon(
-                                            Icons.person,
-                                            size: 160,
-                                            color: Colors.grey.shade700,
-                                          ),
-                                          if (_isScanning)
-                                            const Positioned(
-                                              bottom: 20,
-                                              child: CircularProgressIndicator(color: Colors.white),
-                                            ),
-                                        ],
-                                      ),
-                              ),
-                            ),
-                          ],
+                              const Icon(Icons.verified, color: Color(0xFF10B981), size: 22),
+                            ],
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 16),
 
-                      // Status & Greeting Messages
+                      // Status & Error Messages Banner
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 24),
                         child: Text(
@@ -402,23 +651,20 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: _errorMessage != null
-                                ? Colors.redAccent
-                                : (_greetingMessage != null ? Colors.greenAccent : Colors.white),
-                            fontSize: 17,
+                                ? const Color(0xFFEF4444)
+                                : (_faceVerified ? const Color(0xFF10B981) : Colors.white),
+                            fontSize: 15,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 8),
 
                       Text(
-                        isSelfPunch
-                            ? 'Selfie Mode (${_isFrontCamera ? "Front Camera" : "Back Camera"})'
-                            : 'Manager Attendance Mode for $targetName (Back Camera)',
-                        style: TextStyle(
-                          color: isSelfPunch ? Colors.white54 : Colors.amberAccent,
-                          fontSize: 12,
-                        ),
+                        _isFrontCamera
+                            ? 'Front Camera (Selfie Mode)'
+                            : 'Back Camera (${_autoDetectStaff ? "AI Auto-Detect" : "Target Staff"})',
+                        style: const TextStyle(color: Colors.white54, fontSize: 12),
                       ),
                     ],
                   ),
@@ -426,7 +672,7 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
               ),
             ),
 
-            // Action Bar
+            // Bottom Action Bar
             Container(
               padding: const EdgeInsets.all(16),
               color: const Color(0xFF0F172A),
@@ -437,28 +683,33 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen> {
                       height: 48,
                       child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF2563EB),
+                          backgroundColor: _faceVerified ? const Color(0xFF10B981) : const Color(0xFF0284C7),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        icon: const Icon(Icons.camera_alt, color: Colors.white),
-                        label: const Text('Capture Photo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        onPressed: () async {
-                          await _capturePhoto();
-                          _startFaceScanAndPunch();
-                        },
+                        icon: Icon(
+                          _faceVerified ? Icons.check_circle : Icons.camera_alt,
+                          color: Colors.white,
+                        ),
+                        label: Text(
+                          _faceVerified
+                              ? 'Verified & Marked!'
+                              : (_isScanning ? 'Verifying Face...' : 'Scan Face Now'),
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                        onPressed: _isScanning ? null : _capturePhotoAndVerify,
                       ),
                     ),
                   ),
                   const SizedBox(width: 12),
                   SizedBox(
                     height: 48,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFEF4444),
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.white24),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                       onPressed: () => Navigator.pop(context),
-                      child: const Text('Cancel', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      child: const Text('Close', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold)),
                     ),
                   ),
                 ],

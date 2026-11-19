@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -21,15 +22,19 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  Timer? _liveTrackingTimer;
   int _currentBottomNavIndex = 0;
   Map<String, dynamic>? _todayInfo;
   Map<String, dynamic> _statsCounts = {};
   String _statsDate = 'Today';
+  DateTime _selectedStatsDate = DateTime.now();
   List<dynamic> _employeesList = [];
   List<dynamic> _filteredEmployees = [];
   List<dynamic> _birthdaysList = [];
   List<String> _companiesList = [];
   String? _selectedCompanyFilter;
+  String? _selectedDepartmentFilter;
+  List<String> _departmentsList = [];
   Map<String, dynamic>? _staffHistoryData;
   bool _isLoading = true;
 
@@ -52,12 +57,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       final messaging = FirebaseMessaging.instance;
       await messaging.requestPermission(alert: true, badge: true, sound: true);
-      final token = await messaging.getToken();
+      String? token;
+      try {
+        token = await messaging.getToken().timeout(const Duration(seconds: 6), onTimeout: () => null);
+      } catch (_) {}
+      token ??= await ApiService.getSavedFcmToken();
       if (token != null && token.isNotEmpty) {
         await ApiService.saveFcmToken(token);
-        await ApiService.registerFcmToken(token);
+        await ApiService.registerFcmToken(token, userId: widget.user.id);
       }
+      messaging.onTokenRefresh.listen((newToken) {
+        if (newToken.isNotEmpty) {
+          ApiService.saveFcmToken(newToken);
+          ApiService.registerFcmToken(newToken, userId: widget.user.id);
+        }
+      });
       await messaging.subscribeToTopic('attendance');
+      await messaging.subscribeToTopic('tasks');
+      await messaging.subscribeToTopic('user_${widget.user.id}');
+
+      // If token wasn't ready immediately, retry in background
+      if (token == null || token.isEmpty) {
+        for (final delay in [2, 5, 10, 20]) {
+          await Future.delayed(Duration(seconds: delay));
+          try {
+            final retryToken = await messaging.getToken().timeout(const Duration(seconds: 6), onTimeout: () => null);
+            if (retryToken != null && retryToken.isNotEmpty) {
+              await ApiService.saveFcmToken(retryToken);
+              await ApiService.registerFcmToken(retryToken, userId: widget.user.id);
+              await messaging.subscribeToTopic('attendance');
+              await messaging.subscribeToTopic('tasks');
+              await messaging.subscribeToTopic('user_${widget.user.id}');
+              break;
+            }
+          } catch (_) {}
+        }
+      }
     } catch (e) {
       debugPrint("FCM registration in dashboard error: $e");
     }
@@ -75,21 +110,151 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  String _formatStatsButtonDate(DateTime dt) {
+    final day = dt.day;
+    String suffix = 'th';
+    if (day % 10 == 1 && day != 11) suffix = 'st';
+    else if (day % 10 == 2 && day != 12) suffix = 'nd';
+    else if (day % 10 == 3 && day != 13) suffix = 'rd';
+
+    const mNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final m = mNames[dt.month - 1];
+    final y = dt.year.toString().substring(2);
+    return '$day$suffix $m, \'$y';
+  }
+
+  String _formatStatsSubtitleDate(DateTime dt) {
+    const mNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final m = mNames[dt.month - 1];
+    return '$m ${dt.day}, ${dt.year}';
+  }
+
+  String _calculateDuration(String? inStr, String? outStr) {
+    if (inStr == null || outStr == null || inStr.isEmpty || outStr.isEmpty) return '';
+    try {
+      DateTime? parseTime(String t) {
+        final clean = t.trim().toUpperCase();
+        final isPm = clean.contains('PM');
+        final isAm = clean.contains('AM');
+        final timePart = clean.replaceAll('AM', '').replaceAll('PM', '').trim();
+        final parts = timePart.split(':');
+        if (parts.length >= 2) {
+          int h = int.parse(parts[0]);
+          int m = int.parse(parts[1]);
+          if (isPm && h < 12) h += 12;
+          if (isAm && h == 12) h = 0;
+          return DateTime(2026, 1, 1, h, m);
+        }
+        return null;
+      }
+      final t1 = parseTime(inStr);
+      final t2 = parseTime(outStr);
+      if (t1 != null && t2 != null) {
+        final diffMins = t2.difference(t1).inMinutes;
+        if (diffMins > 0) {
+          return '${(diffMins / 60.0).toStringAsFixed(2)} hrs';
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  void _showCompanyPickerModal() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF181C28),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: Text('Filter by Company', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                ),
+                const Divider(color: Colors.white12),
+                ListTile(
+                  leading: const Icon(Icons.business, color: Color(0xFF38BDF8)),
+                  title: const Text('All Companies', style: TextStyle(color: Colors.white)),
+                  trailing: _selectedCompanyFilter == null ? const Icon(Icons.check, color: Color(0xFF38BDF8)) : null,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    setState(() => _selectedCompanyFilter = null);
+                    _applyFilters();
+                  },
+                ),
+                ..._companiesList.map((comp) => ListTile(
+                      leading: const Icon(Icons.apartment, color: Colors.white70),
+                      title: Text(comp, style: const TextStyle(color: Colors.white)),
+                      trailing: _selectedCompanyFilter == comp ? const Icon(Icons.check, color: Color(0xFF38BDF8)) : null,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        setState(() => _selectedCompanyFilter = comp);
+                        _applyFilters();
+                      },
+                    )),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _pickStatsDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedStatsDate,
+      firstDate: DateTime(2024),
+      lastDate: DateTime(2030),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.dark().copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: Color(0xFF38BDF8),
+              onPrimary: Colors.black,
+              surface: Color(0xFF181C28),
+              onSurface: Colors.white,
+            ),
+            dialogBackgroundColor: const Color(0xFF181C28),
+          ),
+          child: child!,
+        );
+      },
+    );
+    if (picked != null) {
+      setState(() {
+        _selectedStatsDate = picked;
+      });
+      _loadDashboardData();
+    }
+  }
+
   void _loadDashboardData() async {
     setState(() => _isLoading = true);
     try {
+      final dateStr = '${_selectedStatsDate.year}-${_selectedStatsDate.month.toString().padLeft(2, '0')}-${_selectedStatsDate.day.toString().padLeft(2, '0')}';
       final todayInfo = await ApiService.getTodayPunches();
-      final statsRes = await ApiService.getAttendanceStatistics();
+      final statsRes = await ApiService.getAttendanceStatistics(date: dateStr);
 
       List<dynamic> emps = statsRes['employees'] ?? [];
       List<dynamic> bdays = statsRes['birthdays'] ?? [];
       Map<String, dynamic> counts = statsRes['counts'] ?? {};
 
-      // Extract unique company names
+      // Extract unique company names and departments
       Set<String> comps = {};
+      Set<String> depts = {};
       for (var e in emps) {
         if (e['company_name'] != null && e['company_name'].toString().isNotEmpty) {
           comps.add(e['company_name'].toString());
+        }
+        final d = e['department']?.toString().trim();
+        if (d != null && d.isNotEmpty && d.toLowerCase() != 'general' && d.toLowerCase() != 'unassigned') {
+          depts.add(d);
         }
       }
 
@@ -102,14 +267,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       setState(() {
         _todayInfo = todayInfo;
         _statsCounts = counts;
-        _statsDate = statsRes['date'] ?? 'Today';
+        _statsDate = statsRes['date'] ?? _formatStatsSubtitleDate(_selectedStatsDate);
         _employeesList = emps;
         _birthdaysList = bdays;
         _companiesList = comps.toList();
+        _departmentsList = depts.toList()..sort();
         _staffHistoryData = history;
         _isLoading = false;
       });
 
+      _updateLiveTracking(todayInfo['next_action'] == 'out');
       _applyFilters();
     } catch (e) {
       debugPrint("Error loading dashboard data: $e");
@@ -134,6 +301,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // Company filter match
         if (_selectedCompanyFilter != null && _selectedCompanyFilter!.isNotEmpty) {
           if (comp != _selectedCompanyFilter) return false;
+        }
+
+        // Department filter match
+        if (_selectedDepartmentFilter != null && _selectedDepartmentFilter!.isNotEmpty && _selectedDepartmentFilter != 'All') {
+          if ((emp['department'] ?? '').toString() != _selectedDepartmentFilter) return false;
         }
 
         if (_activeBadgeFilter != null) {
@@ -170,6 +342,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _handleLogout() async {
+    _liveTrackingTimer?.cancel();
+    try {
+      await FirebaseMessaging.instance.unsubscribeFromTopic('user_${widget.user.id}');
+    } catch (_) {}
     await ApiService.clearToken();
     if (!mounted) return;
     Navigator.pushReplacement(
@@ -190,37 +366,104 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  void _updateLiveTracking(bool isPunchedIn) {
+    if (isPunchedIn) {
+      if (_liveTrackingTimer == null || !_liveTrackingTimer!.isActive) {
+        _sendTrackingPing();
+        _liveTrackingTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+          _sendTrackingPing();
+        });
+      }
+    } else {
+      _liveTrackingTimer?.cancel();
+      _liveTrackingTimer = null;
+    }
+  }
+
+  void _sendTrackingPing() async {
+    try {
+      final lat = await ApiService.getOfficeLat();
+      final lng = await ApiService.getOfficeLng();
+      final battery = await ApiService.getDeviceBatteryLevel();
+      await ApiService.sendLocationPing(
+        lat: lat,
+        lng: lng,
+        speed: 0.0,
+        battery: battery,
+        status: 'punched_in',
+      );
+    } catch (e) {
+      debugPrint("Tracking ping error: $e");
+    }
+  }
+
+  @override
+  void dispose() {
+    _liveTrackingTimer?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  List<Widget> _getTabScreens() {
+    final canTasks = widget.user.canViewTasks;
+    if (widget.user.canAccessStaffTab) {
+      return [
+        _buildManagerStaffTab(), // Tab 0: Staff (Matching SS 2 & SS 5)
+        if (canTasks) TasksScreen(user: widget.user), // Work (Only if permitted)
+        LeaveRequestScreen(user: widget.user), // Requests
+        _buildSettingsTab(), // Settings
+      ];
+    } else {
+      return [
+        _buildHandPunchScreen(), // Tab 0: Punch
+        // _buildSalaryTab() hidden as requested
+        _buildStaffAttendanceDashboardTab(), // Tab 1: You
+        if (canTasks) TasksScreen(user: widget.user), // Work (Only if permitted)
+        LeaveRequestScreen(user: widget.user), // Requests
+        _buildSettingsTab(), // Settings
+      ];
+    }
+  }
+
+  List<BottomNavigationBarItem> _getBottomNavItems() {
+    final canTasks = widget.user.canViewTasks;
+    if (widget.user.canAccessStaffTab) {
+      return [
+        const BottomNavigationBarItem(icon: Icon(Icons.people_alt), label: 'Staff'),
+        if (canTasks) const BottomNavigationBarItem(icon: Icon(Icons.work_outline), label: 'Work'),
+        const BottomNavigationBarItem(icon: Icon(Icons.holiday_village_outlined), label: 'Requests'),
+        const BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), label: 'Settings'),
+      ];
+    } else {
+      return [
+        const BottomNavigationBarItem(icon: Icon(Icons.front_hand), label: 'Punch'),
+        // Salary menu hidden as requested
+        const BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'You'),
+        if (canTasks) const BottomNavigationBarItem(icon: Icon(Icons.work_outline), label: 'Work'),
+        const BottomNavigationBarItem(icon: Icon(Icons.holiday_village_outlined), label: 'Requests'),
+        const BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), label: 'Settings'),
+      ];
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isManager = widget.user.isManager;
+    final screens = _getTabScreens();
+    final navItems = _getBottomNavItems();
+    final activeIndex = _currentBottomNavIndex.clamp(0, screens.length - 1);
 
     return Scaffold(
       backgroundColor: const Color(0xFF0B0F19), // Dark background matching SS 3 & 4
       body: SafeArea(
         child: IndexedStack(
-          index: _currentBottomNavIndex,
-          children: isManager
-              ? [
-                  _buildHandPunchScreen(), // Tab 0: Punch (Manager Punch IN / OUT for any staff with Back camera default)
-                  _buildManagerStaffTab(), // Tab 1: Staff (Manager view with 11 badges & staff list)
-                  TasksScreen(user: widget.user), // Tab 2: Work
-                  LeaveRequestScreen(user: widget.user), // Tab 3: Requests
-                  _buildSettingsTab(), // Tab 4: Settings
-                ]
-              : [
-                  _buildHandPunchScreen(), // Tab 0: Punch
-                  _buildSalaryTab(), // Tab 1: Salary
-                  _buildStaffAttendanceDashboardTab(), // Tab 2: You (Staff Dashboard matching staff dashboard 1 & 2)
-                  TasksScreen(user: widget.user), // Tab 3: Work
-                  LeaveRequestScreen(user: widget.user), // Tab 4: Requests
-                  _buildSettingsTab(), // Tab 5: Settings
-                ],
+          index: activeIndex,
+          children: screens,
         ),
       ),
 
       // Bottom Navigation Bar with exact role-based menu config
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentBottomNavIndex,
+        currentIndex: activeIndex,
         onTap: (index) => setState(() => _currentBottomNavIndex = index),
         type: BottomNavigationBarType.fixed,
         backgroundColor: const Color(0xFF0F172A),
@@ -228,22 +471,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         unselectedItemColor: Colors.white60,
         selectedFontSize: 11,
         unselectedFontSize: 11,
-        items: isManager
-            ? const [
-                BottomNavigationBarItem(icon: Icon(Icons.front_hand), label: 'Punch'),
-                BottomNavigationBarItem(icon: Icon(Icons.people_alt), label: 'Staff'),
-                BottomNavigationBarItem(icon: Icon(Icons.work_outline), label: 'Work'),
-                BottomNavigationBarItem(icon: Icon(Icons.holiday_village_outlined), label: 'Requests'),
-                BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), label: 'Settings'),
-              ]
-            : const [
-                BottomNavigationBarItem(icon: Icon(Icons.front_hand), label: 'Punch'),
-                BottomNavigationBarItem(icon: Icon(Icons.attach_money), label: 'Salary'),
-                BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: 'You'),
-                BottomNavigationBarItem(icon: Icon(Icons.work_outline), label: 'Work'),
-                BottomNavigationBarItem(icon: Icon(Icons.holiday_village_outlined), label: 'Requests'),
-                BottomNavigationBarItem(icon: Icon(Icons.settings_outlined), label: 'Settings'),
-              ],
+        items: navItems,
       ),
     );
   }
@@ -296,7 +524,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           color: const Color(0xFF1E293B),
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
           child: Text(
-            'Current Shift: ${widget.user.shiftName ?? "General Staff Shift (09:45 AM - 08:30 PM)"}',
+            'Current Shift: ${widget.user.shiftName ?? "General Shift"}',
             textAlign: TextAlign.center,
             style: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 13),
           ),
@@ -329,7 +557,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               onPressed: () {
-                if (widget.user.isManager) {
+                if (widget.user.isManager || widget.user.canMarkOthers) {
                   _showManagerEmployeePickerAndPunch(nextAction);
                 } else {
                   _openScanScreen(nextAction, null);
@@ -349,70 +577,161 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _showManagerEmployeePickerAndPunch(String nextAction) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: const Color(0xFF0F172A),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('Select Staff for Attendance', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white70),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            ListTile(
-              leading: const CircleAvatar(backgroundColor: Color(0xFF38BDF8), child: Icon(Icons.person, color: Colors.black)),
-              title: Text('Self (${widget.user.name})', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              subtitle: const Text('Mark your own attendance (Front Camera)', style: TextStyle(color: Colors.white54, fontSize: 11)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _openScanScreen(nextAction, null);
-              },
-            ),
-            const Divider(color: Colors.white12),
-            const Text('Select Employee to Punch', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 250,
-              child: _employeesList.isEmpty
-                  ? const Center(child: Text('No staff members available', style: TextStyle(color: Colors.white54)))
-                  : ListView.builder(
-                      itemCount: _employeesList.length,
-                      itemBuilder: (c, idx) {
-                        final emp = _employeesList[idx];
-                        final String empName = emp['name'] ?? 'Staff';
-                        final String empDept = emp['designation'] ?? emp['department'] ?? 'Employee';
-                        final String? photo = emp['photo'];
+      builder: (ctx) {
+        String query = '';
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final filteredList = _employeesList.where((emp) {
+              if (query.isEmpty) return true;
+              final q = query.toLowerCase();
+              final name = (emp['name'] ?? '').toString().toLowerCase();
+              final code = (emp['employee_code'] ?? '').toString().toLowerCase();
+              final dept = (emp['department'] ?? emp['designation'] ?? '').toString().toLowerCase();
+              return name.contains(q) || code.contains(q) || dept.contains(q);
+            }).toList();
 
-                        return ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: Colors.blueGrey,
-                            backgroundImage: photo != null && photo.isNotEmpty ? NetworkImage(photo) : null,
-                            child: photo == null || photo.isEmpty ? Text(empName[0].toUpperCase(), style: const TextStyle(color: Colors.white)) : null,
-                          ),
-                          title: Text(empName, style: const TextStyle(color: Colors.white, fontSize: 14)),
-                          subtitle: Text(empDept, style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11)),
-                          onTap: () {
-                            Navigator.pop(ctx);
-                            _openScanScreen(nextAction, emp['id']);
-                          },
-                        );
-                      },
+            return Padding(
+              padding: EdgeInsets.only(
+                top: 20,
+                left: 20,
+                right: 20,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Staff Attendance Punch', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Quick Action: Auto Face Scan (Auto Detect Any Staff)
+                  ListTile(
+                    tileColor: const Color(0xFF0284C7).withOpacity(0.25),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: Color(0xFF0284C7))),
+                    leading: const CircleAvatar(backgroundColor: Color(0xFF0284C7), child: Icon(Icons.auto_awesome, color: Colors.white)),
+                    title: const Text('AI Face Scan & Auto-Detect Staff', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 14)),
+                    subtitle: const Text('Scan employee face to recognize & auto toggle IN/OUT', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Color(0xFF38BDF8)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _openScanScreen(nextAction, null);
+                    },
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Quick Action: Self Punch
+                  ListTile(
+                    tileColor: const Color(0xFF1E293B),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    leading: const CircleAvatar(backgroundColor: Color(0xFF38BDF8), child: Icon(Icons.person, color: Colors.black)),
+                    title: Text('Punch for Self (${widget.user.name})', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                    subtitle: Text('Current action: ${nextAction.toUpperCase()}', style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11)),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.white70),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _openScanScreen(nextAction, widget.user.id);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Search Field for Staff
+                  TextField(
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    decoration: InputDecoration(
+                      hintText: 'Search staff by name, code or department...',
+                      hintStyle: const TextStyle(color: Colors.white54, fontSize: 12),
+                      prefixIcon: const Icon(Icons.search, color: Colors.white70, size: 20),
+                      filled: true,
+                      fillColor: const Color(0xFF1E293B),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
                     ),
-            ),
-          ],
-        ),
-      ),
+                    onChanged: (val) {
+                      setModalState(() {
+                        query = val.trim();
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Employees (${filteredList.length})', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const Text('Tap to scan face & punch', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  SizedBox(
+                    height: 280,
+                    child: filteredList.isEmpty
+                        ? const Center(child: Text('No staff members match your search', style: TextStyle(color: Colors.white54, fontSize: 12)))
+                        : ListView.builder(
+                            itemCount: filteredList.length,
+                            itemBuilder: (c, idx) {
+                              final emp = filteredList[idx];
+                              final String empName = emp['name'] ?? 'Staff';
+                              final String empCode = emp['employee_code'] ?? '';
+                              final String empDept = emp['designation'] ?? emp['department'] ?? 'Employee';
+                              final String? photo = emp['photo'];
+                              final bool isPresent = emp['is_present'] == true;
+
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 6),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1E293B).withOpacity(0.7),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: ListTile(
+                                  dense: true,
+                                  leading: CircleAvatar(
+                                    backgroundColor: Colors.blueGrey,
+                                    backgroundImage: photo != null && photo.isNotEmpty ? NetworkImage(photo) : null,
+                                    child: photo == null || photo.isEmpty ? Text(empName.isNotEmpty ? empName[0].toUpperCase() : 'S', style: const TextStyle(color: Colors.white)) : null,
+                                  ),
+                                  title: Text('$empName ${empCode.isNotEmpty ? "($empCode)" : ""}', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                                  subtitle: Text(empDept, style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 11)),
+                                  trailing: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: isPresent ? const Color(0xFFDC2626) : const Color(0xFF16A34A),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      isPresent ? 'Punch OUT' : 'Punch IN',
+                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11),
+                                    ),
+                                  ),
+                                  onTap: () {
+                                    Navigator.pop(ctx);
+                                    _openScanScreen(isPresent ? 'out' : 'in', emp['id']);
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -428,6 +747,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
     if (updated == true) _loadDashboardData();
+  }
+
+  void _openPunchSelectorModal() {
+    _showManagerEmployeePickerAndPunch('in');
   }
 
   // ==========================================
@@ -448,9 +771,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final companyName = widget.user.companyName ?? 'TULSI FABRICS INDIA PVT LTD';
 
-    return Container(
-      color: const Color(0xFF0B0F19), // Dark theme matching SS 3 & 4
-      child: RefreshIndicator(
+    return Scaffold(
+      backgroundColor: const Color(0xFF0B0F19), // Dark theme matching SS 2 & SS 5
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: const Color(0xFFBFDBFE),
+        onPressed: _openPunchSelectorModal,
+        child: const Icon(Icons.add, color: Colors.black, size: 28),
+      ),
+      body: RefreshIndicator(
         onRefresh: () async => _loadDashboardData(),
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -458,35 +786,71 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Top Header Bar
+              // Top Header Bar matching SS 2
               Row(
                 children: [
-                  CircleAvatar(
-                    radius: 18,
-                    backgroundColor: const Color(0xFF1E293B),
-                    child: Text(companyName[0], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      companyName,
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                      overflow: TextOverflow.ellipsis,
+                  Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    padding: const EdgeInsets.all(3),
+                    child: Center(
+                      child: Text('TULSI', style: TextStyle(color: Colors.brown.shade800, fontWeight: FontWeight.bold, fontSize: 8)),
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: InkWell(
+                      onTap: _showCompanyPickerModal,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              _selectedCompanyFilter ?? companyName,
+                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 18),
+                        ],
+                      ),
+                    ),
+                  ),
+                  // Hand Punch Action Button matching SS 2
+                  InkWell(
+                    onTap: _openPunchSelectorModal,
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF1E3A8A),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.front_hand, color: Color(0xFF93C5FD), size: 18),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  // User Avatar
                   CircleAvatar(
                     radius: 18,
                     backgroundColor: const Color(0xFF38BDF8),
-                    child: Text(
-                      widget.user.name.isNotEmpty ? widget.user.name[0].toUpperCase() : 'M',
-                      style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-                    ),
+                    backgroundImage: widget.user.photo != null ? NetworkImage(widget.user.photo!) : null,
+                    child: widget.user.photo == null
+                        ? Text(
+                            widget.user.name.isNotEmpty ? widget.user.name[0].toUpperCase() : 'M',
+                            style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+                          )
+                        : null,
                   ),
                 ],
               ),
               const SizedBox(height: 14),
 
-              Text('Good day, ${widget.user.name}.', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+              const Text('Good morning.', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
               const SizedBox(height: 14),
 
               // Attendance Statistics Card (Matching Screenshot 3 & 4)
@@ -507,20 +871,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           'Attendance Statistics',
                           style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(color: const Color(0xFF262C3A), borderRadius: BorderRadius.circular(8)),
-                          child: const Row(
-                            children: [
-                              Icon(Icons.calendar_today, size: 12, color: Colors.white70),
-                              SizedBox(width: 4),
-                              Text('Today', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
-                            ],
+                        InkWell(
+                          onTap: _pickStatsDate,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(color: const Color(0xFF262C3A), borderRadius: BorderRadius.circular(8)),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.calendar_today, size: 12, color: Colors.white70),
+                                const SizedBox(width: 5),
+                                Text(_formatStatsButtonDate(_selectedStatsDate), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white)),
+                              ],
+                            ),
                           ),
                         ),
                       ],
                     ),
-                    Text('Based on $_statsDate', style: const TextStyle(fontSize: 11, color: Colors.white54)),
+                    Text('Based on ${_formatStatsSubtitleDate(_selectedStatsDate)}', style: const TextStyle(fontSize: 11, color: Colors.white54)),
                     const SizedBox(height: 16),
 
                     // Badge Grid Display
@@ -666,66 +1033,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(height: 16),
 
-              // Staff Search Bar & Company Filter Dropdown (Matching SS 3 & 4)
-              Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF181C28),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: TextField(
-                        controller: _searchController,
-                        onChanged: (_) => _applyFilters(),
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
-                          icon: Icon(Icons.search, color: Colors.white54),
-                          hintText: 'Search staff...',
-                          hintStyle: TextStyle(color: Colors.white38),
-                          border: InputBorder.none,
-                        ),
-                      ),
-                    ),
+              // Full Width Search Box (Matching Screenshot 2)
+              Container(
+                height: 48,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF181C28),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (_) => _applyFilters(),
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search, color: Colors.white54, size: 20),
+                    suffixIcon: Icon(Icons.chevron_right, color: Colors.white38, size: 20),
+                    hintText: 'Search',
+                    hintStyle: TextStyle(color: Colors.white38, fontSize: 14),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 13),
                   ),
-                  if (_companiesList.isNotEmpty) ...[
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF181C28),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          dropdownColor: const Color(0xFF181C28),
-                          value: _selectedCompanyFilter,
-                          hint: const Text('Company', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                          icon: const Icon(Icons.business, color: Color(0xFF38BDF8), size: 18),
-                          items: [
-                            const DropdownMenuItem<String>(
-                              value: null,
-                              child: Text('All Companies', style: TextStyle(color: Colors.white, fontSize: 12)),
-                            ),
-                            ..._companiesList.map((comp) => DropdownMenuItem<String>(
-                                  value: comp,
-                                  child: Text(comp, style: const TextStyle(color: Colors.white, fontSize: 12)),
-                                )),
-                          ],
-                          onChanged: (val) {
-                            setState(() {
-                              _selectedCompanyFilter = val;
-                            });
-                            _applyFilters();
-                          },
-                        ),
-                      ),
-                    ),
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // Department Horizontal Pill Filter (Matching Screenshot 2)
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _buildDepartmentPill('All'),
+                    ..._departmentsList.map((dept) => _buildDepartmentPill(dept)),
                   ],
-                ],
+                ),
               ),
               const SizedBox(height: 16),
 
@@ -806,24 +1146,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   crossAxisAlignment: CrossAxisAlignment.end,
                                   children: [
-                                    if (inTime != null)
+                                    if (inTime != null || outTime != null) ...[
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          const Text('IN ', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
-                                          Text(inTime, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                          if (inTime != null) ...[
+                                            const Text('IN ', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF4ADE80))),
+                                            Text(inTime, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                          ],
+                                          if (outTime != null) ...[
+                                            const SizedBox(width: 8),
+                                            const Text('OUT ', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFFF97316))),
+                                            Text(outTime, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+                                          ],
                                         ],
                                       ),
-                                    if (outTime != null)
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const Text('OUT ', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
-                                          Text(outTime, style: const TextStyle(fontSize: 11, color: Colors.white70)),
-                                        ],
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        (emp['duration'] != null && emp['duration'].toString().isNotEmpty)
+                                            ? emp['duration'].toString()
+                                            : _calculateDuration(inTime, outTime),
+                                        style: const TextStyle(fontSize: 11, color: Colors.white54),
                                       ),
-                                    if (inTime == null && outTime == null)
-                                      const Text('Not Marked', style: TextStyle(fontSize: 11, color: Colors.white38)),
+                                    ] else ...[
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF3F1318),
+                                          borderRadius: BorderRadius.circular(12),
+                                          border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.3)),
+                                        ),
+                                        child: const Text(
+                                          'Absent',
+                                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFEF4444)),
+                                        ),
+                                      ),
+                                    ],
                                   ],
                                 ),
                               ),
@@ -888,6 +1246,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
               overflow: TextOverflow.ellipsis,
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDepartmentPill(String dept) {
+    final isSelected = (_selectedDepartmentFilter == null && dept == 'All') || (_selectedDepartmentFilter == dept);
+    return Padding(
+      padding: const EdgeInsets.only(right: 8.0),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () {
+          setState(() {
+            _selectedDepartmentFilter = dept == 'All' ? null : dept;
+          });
+          _applyFilters();
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected ? Colors.white : const Color(0xFF1E2433),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            dept,
+            style: TextStyle(
+              color: isSelected ? Colors.black : const Color(0xFFCBD5E1),
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+              fontSize: 13,
+            ),
+          ),
         ),
       ),
     );
@@ -1160,6 +1549,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         builder: (_) => EditProfileScreen(
                           employee: {'id': user.id, 'name': user.name, 'phone': user.phone, 'email': user.email, 'photo': user.photoUrl},
                           onUpdated: _loadDashboardData,
+                          isSelf: true,
+                          canManageEmployees: widget.user.isManager || widget.user.canEditEmployees,
                         ),
                       ),
                     );
@@ -1224,29 +1615,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           builder: (_) => EditProfileScreen(
                             employee: {'id': user.id, 'name': user.name, 'phone': user.phone, 'email': user.email, 'photo': user.photoUrl},
                             onUpdated: _loadDashboardData,
+                            isSelf: true,
+                            canManageEmployees: widget.user.isManager || widget.user.canEditEmployees,
                           ),
                         ),
                       );
                     },
                   ),
-                  const Divider(color: Colors.white10, height: 1),
-                  _buildSettingsMenuItem(
-                    icon: Icons.lock_outline,
-                    label: 'Security',
-                    onTap: () {},
-                  ),
-                  const Divider(color: Colors.white10, height: 1),
-                  _buildSettingsMenuItem(
-                    icon: Icons.tune,
-                    label: 'Configurations',
-                    onTap: () {},
-                  ),
-                  const Divider(color: Colors.white10, height: 1),
-                  _buildSettingsMenuItem(
-                    icon: Icons.help_outline,
-                    label: 'Get Help & Support',
-                    onTap: _showSupportModal,
-                  ),
+                  // Security, Configurations, and Get Help & Support hidden per user request (preserved in code)
+                  if (false) ...[
+                    const Divider(color: Colors.white10, height: 1),
+                    _buildSettingsMenuItem(
+                      icon: Icons.lock_outline,
+                      label: 'Security',
+                      onTap: () {},
+                    ),
+                    const Divider(color: Colors.white10, height: 1),
+                    _buildSettingsMenuItem(
+                      icon: Icons.tune,
+                      label: 'Configurations',
+                      onTap: () {},
+                    ),
+                    const Divider(color: Colors.white10, height: 1),
+                    _buildSettingsMenuItem(
+                      icon: Icons.help_outline,
+                      label: 'Get Help & Support',
+                      onTap: _showSupportModal,
+                    ),
+                  ],
                 ],
               ),
             ),

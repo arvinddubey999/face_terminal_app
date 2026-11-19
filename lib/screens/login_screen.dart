@@ -70,29 +70,34 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final messaging = FirebaseMessaging.instance;
       await messaging.requestPermission(alert: true, badge: true, sound: true);
-      fcmToken = await messaging.getToken();
+      fcmToken = await messaging.getToken().timeout(const Duration(seconds: 4), onTimeout: () => null);
       if (fcmToken != null && fcmToken.isNotEmpty) {
         await ApiService.saveFcmToken(fcmToken);
       }
     } catch (e) {
       debugPrint("FCM token fetch error before login: $e");
     }
+    fcmToken ??= await ApiService.getSavedFcmToken();
 
     try {
       final result = await ApiService.login(login, password, fcmToken: fcmToken);
       setState(() => _isLoading = false);
 
       if (result['status'] == 200 && result['body']['user'] != null) {
-        if (fcmToken != null && fcmToken.isNotEmpty) {
-          try {
-            await ApiService.registerFcmToken(fcmToken);
-            await FirebaseMessaging.instance.subscribeToTopic('attendance');
-          } catch (e) {
-            debugPrint("Register FCM token post login error: $e");
+        final user = UserModel.fromJson(result['body']['user']);
+        if (result['body']['company'] != null) {
+          final comp = result['body']['company'];
+          if (comp['lat'] != null && comp['lng'] != null) {
+            await ApiService.saveOfficeCoordinates(
+              (comp['lat'] as num).toDouble(),
+              (comp['lng'] as num).toDouble(),
+            );
           }
         }
 
-        final user = UserModel.fromJson(result['body']['user']);
+        // CRITICAL: Robust FCM Token registration with persistent background retry
+        _syncFcmTokenPersistently(user, initialToken: fcmToken);
+
         if (!mounted) return;
         Navigator.pushReplacement(
           context,
@@ -109,6 +114,62 @@ class _LoginScreenState extends State<LoginScreen> {
         _errorMessage = 'Error connecting to server: $e';
       });
     }
+  }
+
+  void _syncFcmTokenPersistently(UserModel user, {String? initialToken}) {
+    Future.microtask(() async {
+      try {
+        final messaging = FirebaseMessaging.instance;
+        await messaging.requestPermission(alert: true, badge: true, sound: true);
+
+        String? token = initialToken;
+        if (token == null || token.isEmpty) {
+          try {
+            token = await messaging.getToken().timeout(const Duration(seconds: 6), onTimeout: () => null);
+          } catch (_) {}
+        }
+        token ??= await ApiService.getSavedFcmToken();
+
+        if (token != null && token.isNotEmpty) {
+          await ApiService.saveFcmToken(token);
+          await ApiService.registerFcmToken(token, userId: user.id);
+          try {
+            await messaging.subscribeToTopic('attendance');
+            await messaging.subscribeToTopic('tasks');
+            await messaging.subscribeToTopic('user_${user.id}');
+          } catch (_) {}
+        }
+
+        messaging.onTokenRefresh.listen((newToken) {
+          if (newToken.isNotEmpty) {
+            ApiService.saveFcmToken(newToken);
+            ApiService.registerFcmToken(newToken, userId: user.id);
+          }
+        });
+
+        // Retry loop in background if token wasn't ready
+        if (token == null || token.isEmpty) {
+          for (final delay in [2, 5, 10, 20]) {
+            await Future.delayed(Duration(seconds: delay));
+            try {
+              final retryToken = await messaging.getToken().timeout(const Duration(seconds: 6), onTimeout: () => null);
+              if (retryToken != null && retryToken.isNotEmpty) {
+                await ApiService.saveFcmToken(retryToken);
+                await ApiService.registerFcmToken(retryToken, userId: user.id);
+                try {
+                  await messaging.subscribeToTopic('attendance');
+                  await messaging.subscribeToTopic('tasks');
+                  await messaging.subscribeToTopic('user_${user.id}');
+                } catch (_) {}
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (e) {
+        debugPrint("Persistent FCM sync error: $e");
+      }
+    });
   }
 
   @override

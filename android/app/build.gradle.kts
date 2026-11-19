@@ -2,10 +2,11 @@ plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    id("com.google.gms.google-services")
 }
 
 android {
-    namespace = "com.example.mobile_app"
+    namespace = "com.tulsifabindia.hrms"
     compileSdk = flutter.compileSdkVersion
     // ndkVersion = flutter.ndkVersion
 
@@ -16,7 +17,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.mobile_app"
+        applicationId = "com.tulsifabindia.hrms"
         minSdk = flutter.minSdkVersion
         targetSdk = 34
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION

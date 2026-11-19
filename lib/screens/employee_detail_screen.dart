@@ -158,6 +158,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   builder: (_) => EditProfileScreen(
                     employee: widget.employee,
                     onUpdated: _loadAttendanceData,
+                    isSelf: false,
+                    canManageEmployees: true,
                   ),
                 ),
               );
@@ -232,16 +234,18 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Horizontal Navigation Tabs (Attendance, Salary, Incentive, Expense, Loan/Adv)
+                  // Horizontal Navigation Tabs (Attendance tab displayed; others hidden per request)
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
                       children: [
                         _buildTabItem(0, 'Attendance'),
-                        _buildTabItem(1, 'Salary'),
-                        _buildTabItem(2, 'Incentive'),
-                        _buildTabItem(3, 'Expense'),
-                        _buildTabItem(4, 'Loan / Advance'),
+                        if (false) ...[
+                          _buildTabItem(1, 'Salary'),
+                          _buildTabItem(2, 'Incentive'),
+                          _buildTabItem(3, 'Expense'),
+                          _buildTabItem(4, 'Loan / Advance'),
+                        ],
                       ],
                     ),
                   ),
@@ -257,66 +261,72 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                       padding: const EdgeInsets.all(16),
                       child: Column(
                         children: [
-                          // Month Switcher Header
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Attendance For', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF0F172A))),
-                              InkWell(
-                                onTap: () {
-                                  final empId = widget.employee['id'] ?? widget.employee['user_id'] ?? 1;
-                                  AttendanceCalendarDialog.show(
-                                    context,
-                                    userId: empId,
-                                    userName: name,
-                                    month: _currentMonth.month,
-                                    year: _currentMonth.year,
-                                  );
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(color: Colors.grey.shade300),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      IconButton(
-                                        icon: const Icon(Icons.chevron_left, size: 18),
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                        onPressed: () => _changeMonth(-1),
+                          // Month Switcher Header (Light blue bar matching SS 5)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF93C5FD),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Attendance For', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A))),
+                                Row(
+                                  children: [
+                                    InkWell(
+                                      onTap: () => _changeMonth(-1),
+                                      child: const Icon(Icons.chevron_left, size: 20, color: Color(0xFF0F172A)),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    InkWell(
+                                      onTap: () {
+                                        final empId = widget.employee['id'] ?? widget.employee['user_id'] ?? 1;
+                                        AttendanceCalendarDialog.show(
+                                          context,
+                                          userId: empId,
+                                          userName: name,
+                                          month: _currentMonth.month,
+                                          year: _currentMonth.year,
+                                        );
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(Icons.calendar_today, size: 13, color: Color(0xFF0F172A)),
+                                            const SizedBox(width: 5),
+                                            Text(monthYearStr, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFF0F172A))),
+                                          ],
+                                        ),
                                       ),
-                                      const SizedBox(width: 4),
-                                      const Icon(Icons.calendar_today, size: 14, color: Colors.black87),
-                                      const SizedBox(width: 4),
-                                      Text(monthYearStr, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.black87)),
-                                      const SizedBox(width: 4),
-                                      IconButton(
-                                        icon: const Icon(Icons.chevron_right, size: 18),
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                        onPressed: () => _changeMonth(1),
-                                      ),
-                                    ],
-                                  ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    InkWell(
+                                      onTap: () => _changeMonth(1),
+                                      child: const Icon(Icons.chevron_right, size: 20, color: Color(0xFF0F172A)),
+                                    ),
+                                  ],
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                           const SizedBox(height: 14),
 
-                          // Stat Counters Row (Present, Absent, Half Day, Casual Leave) matching SS 2
+                          // Stat Counters Row (Present, Absent, Half Day, Casual Leave) matching SS 5
                           Row(
                             children: [
-                              _buildStatBox('Present', '$presentCount days', const Color(0xFF14532D), const Color(0xFFDCFCE7), 'present'),
+                              _buildStatBox('Present', '$presentCount days', const Color(0xFF22C55E), 'present'),
                               const SizedBox(width: 6),
-                              _buildStatBox('Absent', '$absentCount times', const Color(0xFF7F1D1D), const Color(0xFFFEE2E2), 'absent'),
+                              _buildStatBox('Absent', '$absentCount times', const Color(0xFFEF4444), 'absent'),
                               const SizedBox(width: 6),
-                              _buildStatBox('Half Day', '$halfCount times', const Color(0xFF0369A1), const Color(0xFFE0F2FE), 'half'),
+                              _buildStatBox('Half Day', '$halfCount times', const Color(0xFF38BDF8), 'half'),
                               const SizedBox(width: 6),
-                              _buildStatBox('Casual Leave', '$leaveCount left', const Color(0xFF9A3412), const Color(0xFFFFEDD5), 'leave'),
+                              _buildStatBox('Casual Leave', '$leaveCount times', const Color(0xFFF97316), 'leave'),
                             ],
                           ),
                           const SizedBox(height: 16),
@@ -350,36 +360,38 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                           ),
                           const SizedBox(height: 20),
 
-                          // Download Report Buttons matching SS 2
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF0F172A),
-                                    padding: const EdgeInsets.symmetric(vertical: 14),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          // Download Report Buttons hidden per user request
+                          if (false) ...[
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF0F172A),
+                                      padding: const EdgeInsets.symmetric(vertical: 14),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    ),
+                                    icon: const Icon(Icons.download, color: Colors.white, size: 18),
+                                    label: const Text('Monthly Report', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                                    onPressed: _openMonthlyReport,
                                   ),
-                                  icon: const Icon(Icons.download, color: Colors.white, size: 18),
-                                  label: const Text('Monthly Report', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                                  onPressed: _openMonthlyReport,
                                 ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF0F172A),
-                                    padding: const EdgeInsets.symmetric(vertical: 14),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF0F172A),
+                                      padding: const EdgeInsets.symmetric(vertical: 14),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    ),
+                                    icon: const Icon(Icons.download, color: Colors.white, size: 18),
+                                    label: const Text('Odometer Report', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                                    onPressed: () => _showMsg('Odometer log downloaded'),
                                   ),
-                                  icon: const Icon(Icons.download, color: Colors.white, size: 18),
-                                  label: const Text('Odometer Report', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                                  onPressed: () => _showMsg('Odometer log downloaded'),
                                 ),
-                              ),
-                            ],
-                          ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -482,13 +494,16 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
         return GestureDetector(
           onTap: () {
-            // Tapping calendar date opens Day Attendance History modal matching SS 3!
+            // Tapping calendar date opens Day Attendance History modal matching SS 4!
             DayAttendanceHistoryDialog.show(
               context,
               employeeName: employeeName,
+              userId: widget.employee['id'] is int ? widget.employee['id'] : int.tryParse(widget.employee['id']?.toString() ?? ''),
               formattedDate: formattedDateStr,
               dateStr: dateStr,
+              shiftName: widget.employee['shift_name']?.toString(),
               punches: allPunches,
+              onRefreshNeeded: () => _loadAttendanceData(),
             );
           },
           child: Container(
@@ -549,7 +564,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     );
   }
 
-  Widget _buildStatBox(String title, String count, Color activeBorderCol, Color activeBgCol, String filterKey) {
+  Widget _buildStatBox(String title, String count, Color accentCol, String filterKey) {
     final isSelected = _filterStatus == filterKey;
     return Expanded(
       child: GestureDetector(
@@ -559,18 +574,33 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           });
         },
         child: Container(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
           decoration: BoxDecoration(
-            color: isSelected ? activeBgCol : Colors.white,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: isSelected ? activeBorderCol : Colors.grey.shade300, width: isSelected ? 2 : 1),
+            color: const Color(0xFF181F2E),
+            borderRadius: BorderRadius.circular(8),
+            border: Border(
+              left: BorderSide(color: accentCol, width: 3.5),
+              top: BorderSide(color: isSelected ? accentCol : Colors.white12),
+              right: BorderSide(color: isSelected ? accentCol : Colors.white12),
+              bottom: BorderSide(color: isSelected ? accentCol : Colors.white12),
+            ),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: TextStyle(fontSize: 10, color: isSelected ? activeBorderCol : Colors.black87, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 2),
-              Text(count, style: TextStyle(fontSize: 12, color: isSelected ? activeBorderCol : Colors.black, fontWeight: FontWeight.bold)),
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10, color: Colors.white70, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                count,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13, color: Colors.white, fontWeight: FontWeight.bold),
+              ),
             ],
           ),
         ),

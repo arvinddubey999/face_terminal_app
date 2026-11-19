@@ -20,7 +20,7 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen> {
 
   // Controllers for New Leave Request
   final _leaveReasonController = TextEditingController();
-  String _leaveType = 'Casual Leave';
+  String _leaveType = 'Unpaid Leave';
   DateTime _fromDate = DateTime.now();
   DateTime _toDate = DateTime.now().add(const Duration(days: 1));
   String? _selectedDocumentPath;
@@ -31,15 +31,77 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen> {
     _loadAllRequestData();
   }
 
+  DateTime? _parseHolidayDate(dynamic h) {
+    if (h == null) return null;
+    final raw = h['raw_date'] ?? h['start_date'];
+    if (raw != null) {
+      try {
+        return DateTime.parse(raw.toString());
+      } catch (_) {}
+    }
+    final dateStr = h['date']?.toString().trim();
+    if (dateStr == null || dateStr.isEmpty) return null;
+    try {
+      return DateTime.parse(dateStr);
+    } catch (_) {}
+
+    // Parse formats like "09 Nov 2026", "9 Nov 2026", "09-11-2026"
+    final parts = dateStr.split(RegExp(r'[\s\-/,]+'));
+    if (parts.length >= 3) {
+      const months = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+      };
+      final p0 = int.tryParse(parts[0]);
+      final p1Low = parts[1].toLowerCase().substring(0, parts[1].length.clamp(0, 3));
+      final p2 = int.tryParse(parts[2]);
+
+      if (p0 != null && months.containsKey(p1Low) && p2 != null) {
+        return DateTime(p2, months[p1Low]!, p0);
+      }
+      final p0Low = parts[0].toLowerCase().substring(0, parts[0].length.clamp(0, 3));
+      final p1 = int.tryParse(parts[1]);
+      if (months.containsKey(p0Low) && p1 != null && p2 != null) {
+        return DateTime(p2, months[p0Low]!, p1);
+      }
+      if (p0 != null && p1 != null && p2 != null) {
+        if (parts[0].length == 4) {
+          return DateTime(p0, p1, p2);
+        } else {
+          return DateTime(p2, p1, p0);
+        }
+      }
+    }
+    return null;
+  }
+
   Future<void> _loadAllRequestData() async {
     setState(() => _isLoading = true);
     try {
       final dashRes = await ApiService.getRequestDashboard();
       final listRes = await ApiService.getRequests();
 
+      final rawHolidays = (dashRes['holidays'] ?? []) as List<dynamic>;
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final upcomingHolidays = rawHolidays.where((h) {
+        final dt = _parseHolidayDate(h);
+        if (dt != null) {
+          final hDate = DateTime(dt.year, dt.month, dt.day);
+          return !hDate.isBefore(today);
+        }
+        return false;
+      }).toList();
+
+      upcomingHolidays.sort((a, b) {
+        final da = _parseHolidayDate(a) ?? DateTime(2099);
+        final db = _parseHolidayDate(b) ?? DateTime(2099);
+        return da.compareTo(db);
+      });
+
       setState(() {
         _dashboardSummary = dashRes['summary'];
-        _holidaysList = dashRes['holidays'] ?? [];
+        _holidaysList = upcomingHolidays;
         _requestsList = listRes['data'] ?? [];
         _isLoading = false;
       });
@@ -480,10 +542,6 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen> {
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                 ),
                 items: const [
-                  DropdownMenuItem(value: 'Casual Leave', child: Text('Casual Leave')),
-                  DropdownMenuItem(value: 'Paid Leave', child: Text('Paid Leave')),
-                  DropdownMenuItem(value: 'Sick Leave', child: Text('Sick Leave')),
-                  DropdownMenuItem(value: 'Vacation', child: Text('Vacation')),
                   DropdownMenuItem(value: 'Unpaid Leave', child: Text('Unpaid Leave')),
                 ],
                 onChanged: (val) {
