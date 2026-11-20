@@ -21,11 +21,13 @@ class _TasksScreenState extends State<TasksScreen> {
 
   // Filter state
   String _selectedStatus = 'pending'; // Default to Pending matching web (Point 3)
+  bool _isUserWiseView = false; // User-wise breakdown view mode
   String _selectedPriority = 'all'; // all, high, medium, low
   String _selectedScope = 'all'; // all, mine, created
   int? _selectedCategoryId;
   int? _selectedDeptId;
-  int? _selectedUserId; // User wise filter (Point 1)
+  int? _selectedUserId; // To User (Assignee)
+  int? _selectedFromUserId; // From User (Creator)
   final TextEditingController _searchController = TextEditingController();
 
   Map<String, int> _counts = {
@@ -74,12 +76,14 @@ class _TasksScreenState extends State<TasksScreen> {
   void _loadTasks() async {
     setState(() => _isLoading = true);
     try {
+      final statusParam = (_selectedStatus != 'all' && _selectedStatus != 'user_wise') ? _selectedStatus : null;
       final res = await ApiService.getTasks(
-        status: _selectedStatus != 'all' ? _selectedStatus : null,
+        status: statusParam,
         search: _searchController.text.trim().isNotEmpty ? _searchController.text.trim() : null,
         categoryId: _selectedCategoryId,
         departmentId: _selectedDeptId,
         userId: _selectedUserId,
+        fromUserId: _selectedFromUserId,
         priority: _selectedPriority != 'all' ? _selectedPriority : null,
         scope: _selectedScope != 'all' ? _selectedScope : null,
       );
@@ -161,12 +165,17 @@ class _TasksScreenState extends State<TasksScreen> {
         // Department filter
         if (_selectedDeptId != null && t.departmentId != _selectedDeptId) return false;
 
-        // User / Assignee filter (Point 1)
+        // User / Assignee filter (To User)
         if (_selectedUserId != null) {
           final isUserAssigned = t.assignedToId == _selectedUserId ||
               t.assignees.any((a) => (a is Map ? a['id'] : a) == _selectedUserId) ||
               t.others.any((o) => (o is Map ? o['id'] : o) == _selectedUserId);
           if (!isUserAssigned) return false;
+        }
+
+        // Creator filter (From User)
+        if (_selectedFromUserId != null && t.createdBy != _selectedFromUserId) {
+          return false;
         }
 
         // Scope filter
@@ -461,6 +470,33 @@ class _TasksScreenState extends State<TasksScreen> {
                       const SizedBox(height: 16),
                     ],
 
+                    // From User / Creator Dropdown
+                    if (_employees.isNotEmpty) ...[
+                      const Text('From User (Created By)', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      DropdownButtonFormField<int?>(
+                        dropdownColor: const Color(0xFF1E293B),
+                        value: _selectedFromUserId,
+                        isExpanded: true,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          filled: true,
+                          fillColor: const Color(0xFF0F172A),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Colors.white24)),
+                        ),
+                        items: [
+                          const DropdownMenuItem<int?>(value: null, child: Text('From User (All)', style: TextStyle(color: Colors.white70))),
+                          ..._employees.map((e) => DropdownMenuItem<int?>(
+                                value: e['id'],
+                                child: Text('${e['name']} (${e['department'] ?? '-'})', overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white)),
+                              )),
+                        ],
+                        onChanged: (val) => setModalState(() => _selectedFromUserId = val),
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+
                     // User / Assignee Dropdown (Point 1: To User)
                     if (_employees.isNotEmpty) ...[
                       const Text('To User (Assignee)', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold)),
@@ -667,7 +703,8 @@ class _TasksScreenState extends State<TasksScreen> {
         _selectedScope != 'all' ||
         _selectedCategoryId != null ||
         _selectedDeptId != null ||
-        _selectedUserId != null;
+        _selectedUserId != null ||
+        _selectedFromUserId != null;
 
     final bool canCreate = widget.user.canCreateTasks ||
         widget.user.role == 'admin' ||
@@ -782,6 +819,7 @@ class _TasksScreenState extends State<TasksScreen> {
                       _statusChip('in_progress', 'In Progress', _counts['in_progress'] ?? 0),
                       _statusChip('completed', 'Completed', _counts['completed'] ?? 0),
                       _statusChip('overdue', 'Overdue', _counts['overdue'] ?? 0, isDanger: true),
+                      _statusChip('user_wise', '👥 User Wise', _allTasks.map((t) => t.assignedToName ?? 'Unassigned').toSet().length),
                     ],
                   ),
                 ),
@@ -814,6 +852,7 @@ class _TasksScreenState extends State<TasksScreen> {
                         _selectedCategoryId = null;
                         _selectedDeptId = null;
                         _selectedUserId = null;
+                        _selectedFromUserId = null;
                       });
                       _loadTasks();
                     },
@@ -829,52 +868,55 @@ class _TasksScreenState extends State<TasksScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : RefreshIndicator(
                     onRefresh: () async => _loadTasks(),
-                    child: _filteredTasks.isEmpty
-                        ? Center(
-                            child: SingleChildScrollView(
-                              physics: const AlwaysScrollableScrollPhysics(),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.assignment_turned_in, size: 54, color: Colors.grey.shade400),
-                                  const SizedBox(height: 12),
-                                  Text(
-                                    _isCalendarView
-                                        ? 'No tasks scheduled on ${_selectedCalendarDate.day} ${_getMonthName(_selectedCalendarDate.month)} ${_selectedCalendarDate.year}.'
-                                        : 'No tasks found.',
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                    child: _isUserWiseView
+                        ? _buildUserWiseTaskList()
+                        : (_filteredTasks.isEmpty
+                            ? Center(
+                                child: SingleChildScrollView(
+                                  physics: const AlwaysScrollableScrollPhysics(),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.assignment_turned_in, size: 54, color: Colors.grey.shade400),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        _isCalendarView
+                                            ? 'No tasks scheduled on ${_selectedCalendarDate.day} ${_getMonthName(_selectedCalendarDate.month)} ${_selectedCalendarDate.year}.'
+                                            : 'No tasks found.',
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                                      ),
+                                      if (hasActiveExtraFilters) ...[
+                                        const SizedBox(height: 8),
+                                        TextButton(
+                                          onPressed: () {
+                                            setState(() {
+                                              _selectedPriority = 'all';
+                                              _selectedScope = 'all';
+                                              _selectedCategoryId = null;
+                                              _selectedDeptId = null;
+                                              _selectedUserId = null;
+                                              _selectedFromUserId = null;
+                                              _searchController.clear();
+                                            });
+                                            _loadTasks();
+                                          },
+                                          child: const Text('Clear all filters'),
+                                        ),
+                                      ],
+                                    ],
                                   ),
-                                  if (hasActiveExtraFilters) ...[
-                                    const SizedBox(height: 8),
-                                    TextButton(
-                                      onPressed: () {
-                                        setState(() {
-                                          _selectedPriority = 'all';
-                                          _selectedScope = 'all';
-                                          _selectedCategoryId = null;
-                                          _selectedDeptId = null;
-                                          _selectedUserId = null;
-                                          _searchController.clear();
-                                        });
-                                        _loadTasks();
-                                      },
-                                      child: const Text('Clear all filters'),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          )
-                        : ListView.builder(
-                            physics: const AlwaysScrollableScrollPhysics(),
-                            padding: const EdgeInsets.all(14),
-                            itemCount: _filteredTasks.length,
-                            itemBuilder: (ctx, i) {
-                              final t = _filteredTasks[i];
-                              return _buildTaskCard(t);
-                            },
-                          ),
+                                ),
+                              )
+                            : ListView.builder(
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                padding: const EdgeInsets.all(14),
+                                itemCount: _filteredTasks.length,
+                                itemBuilder: (ctx, i) {
+                                  final t = _filteredTasks[i];
+                                  return _buildTaskCard(t);
+                                },
+                              )),
                   ),
           ),
         ],
@@ -882,12 +924,136 @@ class _TasksScreenState extends State<TasksScreen> {
     );
   }
 
+  Widget _buildUserWiseTaskList() {
+    if (_filteredTasks.isEmpty) {
+      return Center(
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.assignment_turned_in, size: 54, color: Colors.grey.shade400),
+              const SizedBox(height: 12),
+              const Text(
+                'No tasks found for any user under selected filters.',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final Map<String, List<TaskModel>> groups = {};
+    for (var t in _filteredTasks) {
+      final String name = (t.assignedToName != null && t.assignedToName!.isNotEmpty) ? t.assignedToName! : 'Unassigned';
+      groups.putIfAbsent(name, () => []).add(t);
+    }
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(14),
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFEEF2FF),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFC7D2FE)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.people_alt, color: Color(0xFF4338CA), size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'User-Wise Breakdown (${groups.length} users with tasks)',
+                  style: const TextStyle(color: Color(0xFF3730A3), fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        ),
+        ...groups.entries.map((entry) {
+          final userName = entry.key;
+          final userTasks = entry.value;
+          final pendingCount = userTasks.where((t) => t.status == 'pending').length;
+          final inProgressCount = userTasks.where((t) => t.status == 'in_progress').length;
+          final completedCount = userTasks.where((t) => t.status == 'completed').length;
+
+          return Card(
+            margin: const EdgeInsets.only(bottom: 14),
+            elevation: 2,
+            clipBehavior: Clip.antiAlias,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade300)),
+            child: ExpansionTile(
+              initiallyExpanded: true,
+              backgroundColor: Colors.white,
+              collapsedBackgroundColor: const Color(0xFFF8FAFC),
+              leading: CircleAvatar(
+                backgroundColor: const Color(0xFF3B82F6),
+                radius: 18,
+                child: Text(
+                  userName.substring(0, userName.length > 2 ? 2 : 1).toUpperCase(),
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+              title: Text(
+                userName,
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Color(0xFF0F172A)),
+              ),
+              subtitle: Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(color: const Color(0xFFFEE2E2), borderRadius: BorderRadius.circular(6)),
+                      child: Text('Pending: $pendingCount', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF991B1B))),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(color: const Color(0xFFFEF3C7), borderRadius: BorderRadius.circular(6)),
+                      child: Text('In Progress: $inProgressCount', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF92400E))),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(color: const Color(0xFFDCFCE7), borderRadius: BorderRadius.circular(6)),
+                      child: Text('Done: $completedCount', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF166534))),
+                    ),
+                  ],
+                ),
+              ),
+              trailing: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: const Color(0xFF2563EB).withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+                child: Text('${userTasks.length} tasks', style: const TextStyle(color: Color(0xFF2563EB), fontWeight: FontWeight.bold, fontSize: 11)),
+              ),
+              children: userTasks.map((t) => Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                child: _buildTaskCard(t),
+              )).toList(),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
   Widget _statusChip(String key, String label, int count, {bool isDanger = false}) {
     final isSel = _selectedStatus == key;
     return GestureDetector(
       onTap: () {
-        setState(() => _selectedStatus = key);
-        _applyFilters();
+        if (_selectedStatus != key) {
+          setState(() {
+            _selectedStatus = key;
+            _isUserWiseView = (key == 'user_wise');
+          });
+          _loadTasks();
+        }
       },
       child: Container(
         margin: const EdgeInsets.only(right: 8),

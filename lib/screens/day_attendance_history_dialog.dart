@@ -52,6 +52,19 @@ class DayAttendanceHistoryDialog extends StatefulWidget {
 }
 
 class _DayAttendanceHistoryDialogState extends State<DayAttendanceHistoryDialog> {
+  static const List<Map<String, String>> _statusOptions = [
+    {'value': 'in', 'label': 'IN (Present)', 'color': '0xFF16A34A'},
+    {'value': 'out', 'label': 'OUT', 'color': '0xFF2563EB'},
+    {'value': 'half_day', 'label': 'HALF DAY (0.5 Day)', 'color': '0xFFF97316'},
+    {'value': 'double_duty', 'label': 'DOUBLE DUTY (2 Days)', 'color': '0xFF6366F1'},
+    {'value': 'absent', 'label': 'ABSENT', 'color': '0xFFDC2626'},
+    {'value': 'leave', 'label': 'LEAVE', 'color': '0xFFEAB308'},
+    {'value': 'holiday', 'label': 'HOLIDAY', 'color': '0xFF10B981'},
+    {'value': 'week_off', 'label': 'WEEK OFF', 'color': '0xFFF59E0B'},
+    {'value': 'wop', 'label': 'WEEK OFF PRESENT (WOP)', 'color': '0xFF06B6D4'},
+    {'value': 'hop', 'label': 'HOLIDAY - PRESENT (HOP)', 'color': '0xFFA855F7'},
+  ];
+
   late List<dynamic> _punchesList;
 
   @override
@@ -102,9 +115,9 @@ class _DayAttendanceHistoryDialogState extends State<DayAttendanceHistoryDialog>
       return;
     }
 
-    String status = 'IN';
+    String status = 'in';
     final timeController = TextEditingController(text: '09:30 AM');
-    final locationController = TextEditingController(text: 'Kohinoor Office');
+    final locationController = TextEditingController(text: 'Office');
     final remarksController = TextEditingController();
 
     showModalBottomSheet(
@@ -147,11 +160,22 @@ class _DayAttendanceHistoryDialogState extends State<DayAttendanceHistoryDialog>
                 decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
-                    value: status,
+                    value: _statusOptions.any((o) => o['value'] == status) ? status : 'in',
                     isExpanded: true,
-                    items: ['IN', 'OUT', 'ABSENT', 'LEAVE', 'HOLIDAY', 'WEEK OFF']
-                        .map((s) => DropdownMenuItem(value: s, child: Text(s, style: const TextStyle(fontWeight: FontWeight.bold))))
-                        .toList(),
+                    items: _statusOptions.map((opt) {
+                      final colorVal = int.parse(opt['color']!);
+                      return DropdownMenuItem<String>(
+                        value: opt['value'],
+                        child: Text(
+                          opt['label']!,
+                          style: TextStyle(
+                            color: Color(colorVal),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                      );
+                    }).toList(),
                     onChanged: (val) {
                       if (val != null) setModalState(() => status = val);
                     },
@@ -247,7 +271,18 @@ class _DayAttendanceHistoryDialogState extends State<DayAttendanceHistoryDialog>
 
   void _showEditModal(dynamic punch) {
     final int punchId = punch['id'] ?? 0;
-    String status = (punch['type'] ?? 'IN').toString().toUpperCase();
+    String status = (punch['type'] ?? 'in').toString().toLowerCase();
+    final String r = (punch['remarks'] ?? '').toString();
+    if (r.contains('HALF_DAY')) {
+      status = 'half_day';
+    } else if (r.contains('DOUBLE_DUTY')) {
+      status = 'double_duty';
+    } else if (r.contains('WOP')) {
+      status = 'wop';
+    } else if (r.contains('HOP')) {
+      status = 'hop';
+    }
+
     final timeController = TextEditingController(text: punch['time'] ?? '09:49 AM');
     final locationController = TextEditingController(text: punch['location'] ?? '');
     final remarksController = TextEditingController(text: punch['remarks'] ?? '');
@@ -292,11 +327,22 @@ class _DayAttendanceHistoryDialogState extends State<DayAttendanceHistoryDialog>
                 decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(8)),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
-                    value: ['IN', 'OUT', 'ABSENT', 'LEAVE', 'HOLIDAY', 'WEEK OFF'].contains(status) ? status : 'IN',
+                    value: _statusOptions.any((o) => o['value'] == status) ? status : 'in',
                     isExpanded: true,
-                    items: ['IN', 'OUT', 'ABSENT', 'LEAVE', 'HOLIDAY', 'WEEK OFF']
-                        .map((s) => DropdownMenuItem(value: s, child: Text(s, style: const TextStyle(fontWeight: FontWeight.bold))))
-                        .toList(),
+                    items: _statusOptions.map((opt) {
+                      final colorVal = int.parse(opt['color']!);
+                      return DropdownMenuItem<String>(
+                        value: opt['value'],
+                        child: Text(
+                          opt['label']!,
+                          style: TextStyle(
+                            color: Color(colorVal),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                      );
+                    }).toList(),
                     onChanged: (val) {
                       if (val != null) setModalState(() => status = val);
                     },

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,6 +11,32 @@ class ApiService {
   static String customBaseUrl = '';
 
   static const MethodChannel _batteryChannel = MethodChannel('samples.flutter.dev/battery');
+
+  static Future<Position?> getDeviceCurrentPosition() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        return null;
+      }
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          return null;
+        }
+      }
+      if (permission == LocationPermission.deniedForever) {
+        return null;
+      }
+      return await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 6),
+      );
+    } catch (e) {
+      debugPrint("Error fetching device GPS position: $e");
+      return null;
+    }
+  }
 
   static Future<int?> getDeviceBatteryLevel() async {
     try {
@@ -99,6 +126,7 @@ class ApiService {
     required String type, // in or out
     required double lat,
     required double lng,
+    String? locationText,
     bool faceDetected = true,
     int? employeeId, // For Manager/Admin punching staff
     String? photoPath,
@@ -114,6 +142,7 @@ class ApiService {
       req.fields['lat'] = lat.toString();
       req.fields['lng'] = lng.toString();
       req.fields['face_detected'] = faceDetected ? '1' : '0';
+      if (locationText != null && locationText.isNotEmpty) req.fields['location_text'] = locationText;
       if (employeeId != null) req.fields['employee_id'] = employeeId.toString();
       if (autoDetect) req.fields['auto_detect'] = '1';
       if (battery != null) req.fields['battery'] = battery.toString();
@@ -134,6 +163,7 @@ class ApiService {
           'type': type,
           'lat': lat,
           'lng': lng,
+          if (locationText != null && locationText.isNotEmpty) 'location_text': locationText,
           'face_detected': faceDetected,
           if (employeeId != null) 'employee_id': employeeId,
           if (autoDetect) 'auto_detect': true,
@@ -225,6 +255,7 @@ class ApiService {
     int? categoryId,
     int? departmentId,
     int? userId,
+    int? fromUserId,
     String? priority,
     String? scope,
   }) async {
@@ -234,6 +265,7 @@ class ApiService {
     if (categoryId != null) queryParams['category_id'] = categoryId.toString();
     if (departmentId != null) queryParams['department_id'] = departmentId.toString();
     if (userId != null) queryParams['user_id'] = userId.toString();
+    if (fromUserId != null) queryParams['from_user_id'] = fromUserId.toString();
     if (priority != null && priority.isNotEmpty && priority != 'all') queryParams['priority'] = priority;
     if (scope != null && scope.isNotEmpty && scope != 'all') queryParams['scope'] = scope;
 

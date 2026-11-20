@@ -49,14 +49,19 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen>
     final bool isManagerOrCanMark = widget.user.isManager || widget.user.canMarkOthers;
     if (isManagerOrCanMark) {
       if (widget.targetEmployeeId != null && widget.targetEmployeeId != widget.user.id) {
+        // Manager punching for a specific selected staff member
+        _selectedEmployeeId = widget.targetEmployeeId;
         _isFrontCamera = false;
         _autoDetectStaff = false;
       } else {
-        _isFrontCamera = false;
-        _autoDetectStaff = true; // Auto-detect staff by default for managers!
+        // Manager punching for self: ALWAYS self by default, front camera!
+        _selectedEmployeeId = null;
+        _isFrontCamera = true;
+        _autoDetectStaff = false;
       }
       _loadTeam();
     } else {
+      _selectedEmployeeId = null;
       _isFrontCamera = true;
       _autoDetectStaff = false;
     }
@@ -257,11 +262,21 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen>
 
       setState(() {
         _capturedImage = File(image.path);
-        _faceStatusText = 'Verifying face with AI Selfie Verification...';
+        _faceStatusText = 'Fetching GPS location & verifying face with AI...';
       });
 
-      final officeLat = await ApiService.getOfficeLat();
-      final officeLng = await ApiService.getOfficeLng();
+      // Get real GPS coordinates from device (falls back to office coords if GPS is unavailable)
+      double punchLat = await ApiService.getOfficeLat();
+      double punchLng = await ApiService.getOfficeLng();
+      try {
+        final pos = await ApiService.getDeviceCurrentPosition();
+        if (pos != null) {
+          punchLat = pos.latitude;
+          punchLng = pos.longitude;
+        }
+      } catch (e) {
+        debugPrint("Error reading device GPS: $e");
+      }
 
       Map<String, dynamic> res;
 
@@ -269,15 +284,15 @@ class _AttendanceScanScreenState extends State<AttendanceScanScreen>
         // Manager Mode: AI auto-detects staff from registered face images
         res = await ApiService.recognizeAndPunch(
           photoPath: image.path,
-          lat: officeLat,
-          lng: officeLng,
+          lat: punchLat,
+          lng: punchLng,
         );
       } else {
         // Specific staff or Self attendance: verify against registered profile
         res = await ApiService.punchAttendance(
           type: _type,
-          lat: officeLat,
-          lng: officeLng,
+          lat: punchLat,
+          lng: punchLng,
           faceDetected: true,
           employeeId: _selectedEmployeeId,
           photoPath: image.path,
