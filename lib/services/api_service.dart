@@ -28,10 +28,24 @@ class ApiService {
       if (permission == LocationPermission.deniedForever) {
         return null;
       }
-      return await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 6),
-      );
+
+      // 1. Try to get last known position first (instant 0ms retrieval)
+      Position? lastKnown;
+      try {
+        lastKnown = await Geolocator.getLastKnownPosition();
+      } catch (_) {}
+
+      // 2. Fetch fresh position with medium accuracy (resolves fast indoors via Wi-Fi/Cell/GPS fused provider)
+      try {
+        final fresh = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium,
+          timeLimit: const Duration(seconds: 8),
+        );
+        return fresh;
+      } catch (e) {
+        debugPrint("Fresh GPS acquisition timed out indoors, using last known position: $e");
+        return lastKnown;
+      }
     } catch (e) {
       debugPrint("Error fetching device GPS position: $e");
       return null;

@@ -108,7 +108,8 @@ class UserModel {
     );
   }
 
-  bool get isManager => role == 'admin' || role == 'manager' || role == 'super_admin';
+  bool get isSuperAdmin => role == 'super_admin' || role == 'super admin';
+  bool get isManager => role == 'admin' || role == 'manager' || role == 'super_admin' || role == 'super admin';
   bool get canAccessStaffTab => canViewEmployees || isManager;
   String? get photoUrl => photo;
 }

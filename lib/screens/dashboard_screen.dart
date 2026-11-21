@@ -160,6 +160,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _showCompanyPickerModal() {
+    final bool isSuperAdmin = widget.user.isSuperAdmin;
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF181C28),
@@ -177,16 +178,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: Text('Filter by Company', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
                 ),
                 const Divider(color: Colors.white12),
-                ListTile(
-                  leading: const Icon(Icons.business, color: Color(0xFF38BDF8)),
-                  title: const Text('All Companies', style: TextStyle(color: Colors.white)),
-                  trailing: _selectedCompanyFilter == null ? const Icon(Icons.check, color: Color(0xFF38BDF8)) : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    setState(() => _selectedCompanyFilter = null);
-                    _applyFilters();
-                  },
-                ),
+                if (isSuperAdmin || _companiesList.length > 1)
+                  ListTile(
+                    leading: const Icon(Icons.business, color: Color(0xFF38BDF8)),
+                    title: const Text('All Companies', style: TextStyle(color: Colors.white)),
+                    trailing: _selectedCompanyFilter == null ? const Icon(Icons.check, color: Color(0xFF38BDF8)) : null,
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() => _selectedCompanyFilter = null);
+                      _applyFilters();
+                    },
+                  ),
                 ..._companiesList.map((comp) => ListTile(
                       leading: const Icon(Icons.apartment, color: Colors.white70),
                       title: Text(comp, style: const TextStyle(color: Colors.white)),
@@ -245,17 +247,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
       List<dynamic> bdays = statsRes['birthdays'] ?? [];
       Map<String, dynamic> counts = statsRes['counts'] ?? {};
 
-      // Extract unique company names and departments
+      final bool isSuper = statsRes['is_super_admin'] == true || widget.user.isSuperAdmin;
+      final List<dynamic> accessibleComps = statsRes['accessible_companies'] ?? [];
+
+      // Extract company names and departments
       Set<String> comps = {};
       Set<String> depts = {};
-      for (var e in emps) {
-        if (e['company_name'] != null && e['company_name'].toString().isNotEmpty) {
-          comps.add(e['company_name'].toString());
+
+      if (accessibleComps.isNotEmpty) {
+        for (var c in accessibleComps) {
+          if (c['name'] != null && c['name'].toString().isNotEmpty) {
+            comps.add(c['name'].toString());
+          }
         }
+      } else {
+        for (var e in emps) {
+          if (e['company_name'] != null && e['company_name'].toString().isNotEmpty) {
+            comps.add(e['company_name'].toString());
+          }
+        }
+      }
+
+      for (var e in emps) {
         final d = e['department']?.toString().trim();
         if (d != null && d.isNotEmpty && d.toLowerCase() != 'general' && d.toLowerCase() != 'unassigned') {
           depts.add(d);
         }
+      }
+
+      // If user is a single-company admin, lock company filter strictly to their company
+      if (!isSuper && comps.length == 1) {
+        _selectedCompanyFilter = comps.first;
       }
 
       // If user is Staff, load staff attendance history
@@ -338,6 +360,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
         return true;
       }).toList();
+
+      // Sort alphabetically by employee name in Ascending order (A to Z)
+      _filteredEmployees.sort((a, b) {
+        final nameA = (a['name'] ?? '').toString().trim().toLowerCase();
+        final nameB = (b['name'] ?? '').toString().trim().toLowerCase();
+        return nameA.compareTo(nameB);
+      });
     });
   }
 
@@ -804,19 +833,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: InkWell(
-                      onTap: _showCompanyPickerModal,
+                      onTap: (widget.user.isSuperAdmin || _companiesList.length > 1) ? _showCompanyPickerModal : null,
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Flexible(
                             child: Text(
-                              _selectedCompanyFilter ?? companyName,
+                              _selectedCompanyFilter ?? (_companiesList.isNotEmpty ? _companiesList.first : companyName),
                               style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                          const SizedBox(width: 4),
-                          const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 18),
+                          if (widget.user.isSuperAdmin || _companiesList.length > 1) ...[
+                            const SizedBox(width: 4),
+                            const Icon(Icons.keyboard_arrow_down, color: Colors.white70, size: 18),
+                          ],
                         ],
                       ),
                     ),
@@ -1170,15 +1201,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       ),
                                     ] else ...[
                                       Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                                         decoration: BoxDecoration(
-                                          color: const Color(0xFF3F1318),
+                                          color: const Color(0xFF262C3A),
                                           borderRadius: BorderRadius.circular(12),
-                                          border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.3)),
                                         ),
                                         child: const Text(
-                                          'Absent',
-                                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFFEF4444)),
+                                          'Not Marked',
+                                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white70),
                                         ),
                                       ),
                                     ],
